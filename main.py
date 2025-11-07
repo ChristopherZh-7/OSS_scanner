@@ -175,15 +175,52 @@ def main():
                 logger.error(f"AWS URL格式错误！示例：https://bucket.s3-us-east-1.amazonaws.com")
                 return
         elif args.cloud == "huawei":
-            # 华为云URL格式：https://{bucket}.obs-{region}.myhuaweicloud.com
-            pattern = r"^https?://([^.]+)\.obs-([^.]+)\.myhuaweicloud\.com"
-            match = re.match(pattern, args.hostid_url)
+            # 华为云URL格式支持多种模式
+            # 标准格式1：https://{bucket}.obs-{region}.myhuaweicloud.com
+            # 标准格式2：https://{bucket}.obs.{region}.myhuaweicloud.com
+            # 自定义域名：https://{bucket}.{custom-domain}.com (需要从响应中提取region)
+            
+            pattern1 = r"^https?://([^.]+)\.obs-([^.]+)\.myhuaweicloud\.com"
+            pattern2 = r"^https?://([^.]+)\.obs\.([^.]+)\.myhuaweicloud\.com"
+            
+            match = re.match(pattern1, args.hostid_url) or re.match(pattern2, args.hostid_url)
             if match:
                 args.bucket = match.group(1)
                 args.region = match.group(2)  # 如cn-north-4
             else:
-                logger.error(f"华为云URL格式错误！示例：https://bucket.obs-cn-north-4.myhuaweicloud.com")
-                return
+                # 尝试自定义域名格式，从URL提取bucket名称，并尝试通过API获取region
+                custom_pattern = r"^https?://([^.]+)\."
+                custom_match = re.match(custom_pattern, args.hostid_url)
+                if custom_match:
+                    args.bucket = custom_match.group(1)
+                    # 对于自定义域名，尝试通过访问URL从响应头中提取region信息
+                    try:
+                        import requests
+                        resp = requests.head(args.hostid_url, timeout=10, allow_redirects=False)
+                        # 华为云OBS响应头中可能包含region信息
+                        region_header = resp.headers.get('x-obs-bucket-location') or resp.headers.get('x-amz-bucket-region')
+                        if region_header:
+                            args.region = region_header
+                            logger.info(f"从响应头中提取到Region: {args.region}")
+                        else:
+                            # 如果无法从响应头提取，使用默认region或要求用户手动指定
+                            logger.warning(f"无法从响应头中提取Region，请使用--region参数手动指定")
+                            logger.warning(f"华为云常见区域：cn-north-4(北京四)、cn-north-1(北京一)、cn-east-3(上海一)等")
+                            if not args.region:
+                                logger.error(f"自定义域名无法自动提取Region，请手动指定--region参数")
+                                return
+                    except Exception as e:
+                        logger.warning(f"尝试从自定义域名提取Region失败: {str(e)}")
+                        if not args.region:
+                            logger.error(f"请使用--region参数手动指定区域")
+                            return
+                else:
+                    logger.error(f"华为云URL格式错误！")
+                    logger.error(f"支持的格式：")
+                    logger.error(f"  1. https://bucket.obs-cn-north-4.myhuaweicloud.com")
+                    logger.error(f"  2. https://bucket.obs.cn-north-4.myhuaweicloud.com")
+                    logger.error(f"  3. https://bucket.custom-domain.com (需配合--region参数)")
+                    return
         else:
             logger.error(f"暂不支持{args.cloud}的URL解析，请手动指定--bucket和--region")
             return
